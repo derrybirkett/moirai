@@ -106,7 +106,7 @@ fi
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
-AGENT_SUBMODULE_PATH=".moirai/agents/${AGENT_NAME}"
+AGENT_SUBMODULE_PATH=".agents/${AGENT_NAME}"
 if [[ ! -d "$AGENT_SUBMODULE_PATH" ]]; then
   git submodule add -b main "$AGENT_REPO" "$AGENT_SUBMODULE_PATH"
   ( cd "$AGENT_SUBMODULE_PATH" && git checkout "$AGENT_VERSION" )

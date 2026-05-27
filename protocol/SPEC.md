@@ -53,7 +53,7 @@ A consuming repo submodules Moirai and installs one or more agents.
 | Path | Purpose |
 |---|---|
 | `.moirai/` | Moirai itself, pinned to a tag. |
-| `.moirai/agents/<name>/` *(or similar)* | Each installed agent, pinned to the tag specified in Moirai's `registry.yml`. |
+| `.agents/<name>/` | Each installed agent, pinned to the tag specified in Moirai's `registry.yml`. Agents are siblings of `.moirai/`, not nested inside it — git forbids submodules-within-submodules. |
 
 The exact submodule layout is the installer's call and may evolve; consuming repos should treat it as an implementation detail.
 

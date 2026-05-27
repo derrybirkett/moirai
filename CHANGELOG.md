@@ -4,6 +4,14 @@ All notable changes to Moirai.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and Moirai adheres to [Semantic Versioning](https://semver.org/). Consuming repos pin a tag (e.g. `v0.1.0`) so the orchestrator's behaviour is stable across consumer updates.
 
+## [0.1.2] — 2026-05-27
+
+Fixes the first install-script bug surfaced by step 3 of the walking skeleton (consume curator via moirai in monospace.studio).
+
+### Fixed
+- [`bin/install`](bin/install) now places agent submodules at `.agents/<name>/` (top-level, sibling to `.moirai/`) instead of `.moirai/agents/<name>/`. Git rejects nested submodules, which broke the first install attempt with `fatal: Pathspec '.moirai/agents/curator' is in submodule '.moirai'`.
+- [`protocol/SPEC.md`](protocol/SPEC.md) §2 updated to document the new `.agents/<name>/` convention.
+
 ## [0.1.1] — 2026-05-27
 
 Fixes the missing-auth issue surfaced by Curator's first live nightly run on monospace.studio: the run succeeded but filed zero issues because Claude's Bash sub-shells had no GitHub auth and the `mcp__github__*` tools listed in the old workflow's allowed-tools weren't backed by an actual MCP server.
