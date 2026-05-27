@@ -4,6 +4,13 @@ All notable changes to Moirai.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and Moirai adheres to [Semantic Versioning](https://semver.org/). Consuming repos pin a tag (e.g. `v0.1.0`) so the orchestrator's behaviour is stable across consumer updates.
 
+## [0.1.1] — 2026-05-27
+
+Fixes the missing-auth issue surfaced by Curator's first live nightly run on monospace.studio: the run succeeded but filed zero issues because Claude's Bash sub-shells had no GitHub auth and the `mcp__github__*` tools listed in the old workflow's allowed-tools weren't backed by an actual MCP server.
+
+### Fixed
+- [`adapters/claude-code-action/workflow.yml.template`](adapters/claude-code-action/workflow.yml.template) now surfaces `GH_TOKEN` and `GITHUB_TOKEN` as environment variables in the run step, so agents that use the `issues` sink (or otherwise need `gh` via Bash) can authenticate without extra wiring. The default `ALLOWED_TOOLS` (`Bash,Read,Grep,Glob`) was already free of phantom MCP tools, so no change there.
+
 ## [0.1.0] — 2026-05-27
 
 Walking-skeleton release. The protocol works end-to-end for one agent ([curator](https://github.com/derrybirkett/curator)).

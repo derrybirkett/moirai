@@ -63,3 +63,9 @@ jobs:
           AGENT_CONFIG_PATH: ${{ steps.env.outputs.agent_config_path }}
           AGENT_REPO_DIR: ${{ steps.env.outputs.agent_repo_dir }}
           TODAY: ${{ steps.env.outputs.today }}
+          # GH_TOKEN/GITHUB_TOKEN are surfaced so agents can call `gh` via Bash
+          # (e.g. `gh issue create`, `gh issue list`). The claude-code-action's
+          # MCP github tools require a separate mcp_config; we default to gh CLI
+          # because it works without extra wiring.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
