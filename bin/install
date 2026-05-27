@@ -2,7 +2,7 @@
 # moirai/bin/install — install an agent into the current repo.
 #
 # Usage:
-#   .moirai/bin/install <agent-name> [--trigger <trigger>] [--sink <sink>] [--adapter <adapter>]
+#   .moirai/bin/install <agent-name> [--trigger <trigger>] [--sink <sink>] [--adapter <adapter>] [--force]
 #
 # Reads ../registry.yml relative to this script to find the agent.
 # Submodules the agent at its pinned tag, scaffolds .github/agents/<name>/config.yml
@@ -22,12 +22,14 @@ AGENT_NAME=""
 TRIGGER_OVERRIDE=""
 SINK_OVERRIDE=""
 ADAPTER_OVERRIDE=""
+FORCE=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --trigger) TRIGGER_OVERRIDE="$2"; shift 2 ;;
     --sink)    SINK_OVERRIDE="$2"; shift 2 ;;
     --adapter) ADAPTER_OVERRIDE="$2"; shift 2 ;;
+    --force)   FORCE=1; shift ;;
     --help|-h)
       sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
@@ -49,12 +51,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$AGENT_NAME" ]]; then
-  echo "usage: install <agent-name> [--trigger <t>] [--sink <s>] [--adapter <a>]" >&2
+  echo "usage: install <agent-name> [--trigger <t>] [--sink <s>] [--adapter <a>] [--force]" >&2
   exit 2
 fi
 
-# --- Read a value from registry.yml ------------------------------------------
-# Parses only the shape used by registry.yml: nested keys with scalar values.
+# --- Read a value from a YAML file -------------------------------------------
 yaml_get() {
   python3 - "$1" "$2" <<'PY'
 import sys, re
@@ -109,7 +110,7 @@ cd "$REPO_ROOT"
 AGENT_SUBMODULE_PATH=".agents/${AGENT_NAME}"
 if [[ ! -d "$AGENT_SUBMODULE_PATH" ]]; then
   git submodule add -b main "$AGENT_REPO" "$AGENT_SUBMODULE_PATH"
-  ( cd "$AGENT_SUBMODULE_PATH" && git checkout "$AGENT_VERSION" )
+  ( cd "$AGENT_SUBMODULE_PATH" && git fetch --tags origin && git checkout "$AGENT_VERSION" )
   echo "+ added submodule ${AGENT_SUBMODULE_PATH} @ ${AGENT_VERSION}"
 else
   echo "= submodule ${AGENT_SUBMODULE_PATH} already exists, skipping submodule add"
@@ -121,18 +122,40 @@ CONFIG_DIR=".github/agents/${AGENT_NAME}"
 CONFIG_FILE="${CONFIG_DIR}/config.yml"
 mkdir -p "$CONFIG_DIR"
 
-if [[ -f "$CONFIG_FILE" ]]; then
-  echo "= ${CONFIG_FILE} already exists, leaving in place"
+if [[ -f "$CONFIG_FILE" && "$FORCE" -ne 1 ]]; then
+  echo "= ${CONFIG_FILE} already exists, leaving in place (use --force to regenerate)"
 else
-  {
-    echo "# ${AGENT_NAME} agent — repo-specific configuration"
-    echo "# Scaffolded from ${AGENT_NAME}@${AGENT_VERSION} defaults.yml"
-    echo "# Validated against ${AGENT_SUBMODULE_PATH}/schema.json"
-    echo "# Any field omitted here falls back to the agent's defaults."
-    echo ""
-    cat "${AGENT_SUBMODULE_PATH}/defaults.yml"
-  } > "$CONFIG_FILE"
+  # Strip the defaults.yml leading comment block (avoid double headers) and prepend our own.
+  python3 - "${AGENT_SUBMODULE_PATH}/defaults.yml" "$CONFIG_FILE" \
+    "$AGENT_NAME" "$AGENT_VERSION" "$AGENT_SUBMODULE_PATH" <<'PY'
+import sys
+lines = open(sys.argv[1]).read().splitlines()
+# Drop leading comment-or-blank lines so we can prepend our own header.
+i = 0
+while i < len(lines) and (lines[i].strip() == "" or lines[i].lstrip().startswith("#")):
+    i += 1
+body = "\n".join(lines[i:]).rstrip() + "\n"
+header = (
+    f"# {sys.argv[3]} agent — repo-specific configuration\n"
+    f"# Scaffolded from {sys.argv[3]}@{sys.argv[4]} defaults.yml via .moirai/bin/install.\n"
+    f"# Validated against {sys.argv[5]}/schema.json.\n"
+    f"# Any field omitted here falls back to {sys.argv[5]}/defaults.yml.\n"
+    f"\n"
+)
+open(sys.argv[2], "w").write(header + body)
+PY
   echo "+ scaffolded ${CONFIG_FILE}"
+fi
+
+# --- Resolve inbox path (for inbox sink) -------------------------------------
+
+INBOX_PATH="notes/inbox.md"
+if [[ "$SINK" == "inbox" ]]; then
+  # Allow the agent's defaults.yml to override (e.g. inbox_path: docs/inbox.md)
+  RESOLVED=$(yaml_get "${AGENT_SUBMODULE_PATH}/defaults.yml" "inbox_path" 2>/dev/null || true)
+  if [[ -n "$RESOLVED" ]]; then
+    INBOX_PATH="$RESOLVED"
+  fi
 fi
 
 # --- Render the workflow from the adapter template --------------------------
@@ -142,46 +165,96 @@ mkdir -p .github/workflows
 
 AGENT_NAME_TITLE="$(echo "$AGENT_NAME" | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2)} 1')"
 
+# Trigger block (workflow_dispatch always included; pr also gets the pr_number input)
 case "$TRIGGER" in
-  schedule)         TRIGGER_BLOCK=$'  schedule:\n    - cron: "0 3 * * *"\n  workflow_dispatch:' ;;
-  pull_request)     TRIGGER_BLOCK=$'  pull_request:\n    types: [opened, synchronize, reopened]\n  workflow_dispatch:' ;;
-  workflow_dispatch) TRIGGER_BLOCK=$'  workflow_dispatch:' ;;
+  schedule)
+    TRIGGER_BLOCK=$'  schedule:\n    - cron: "0 3 * * *"\n  workflow_dispatch:'
+    IS_PR=0
+    ;;
+  pull_request)
+    TRIGGER_BLOCK=$'  pull_request:\n    types: [opened, synchronize, reopened]\n  workflow_dispatch:\n    inputs:\n      pr_number:\n        description: "PR number to run against (manual run)"\n        required: true'
+    IS_PR=1
+    ;;
+  workflow_dispatch)
+    TRIGGER_BLOCK=$'  workflow_dispatch:'
+    IS_PR=0
+    ;;
   *) echo "error: unknown trigger '${TRIGGER}' (supported: schedule, pull_request, workflow_dispatch)" >&2; exit 1 ;;
 esac
 
+# Permissions, derived from sink
 case "$SINK" in
-  issues)     PERMISSIONS_BLOCK=$'      contents: read\n      id-token: write\n      issues: write' ;;
-  inbox)      PERMISSIONS_BLOCK=$'      contents: write\n      id-token: write\n      pull-requests: read' ;;
-  summary)    PERMISSIONS_BLOCK=$'      contents: read\n      id-token: write' ;;
-  pr-comment) PERMISSIONS_BLOCK=$'      contents: read\n      id-token: write\n      pull-requests: write' ;;
+  issues)     PERMISSIONS_BLOCK=$'      contents: read\n      id-token: write\n      issues: write'; IS_INBOX=0 ;;
+  inbox)      PERMISSIONS_BLOCK=$'      contents: write\n      id-token: write\n      pull-requests: read'; IS_INBOX=1 ;;
+  summary)    PERMISSIONS_BLOCK=$'      contents: read\n      id-token: write'; IS_INBOX=0 ;;
+  pr-comment) PERMISSIONS_BLOCK=$'      contents: read\n      id-token: write\n      pull-requests: write'; IS_INBOX=0 ;;
   *) echo "error: unknown sink '${SINK}' (supported: issues, inbox, summary, pr-comment)" >&2; exit 1 ;;
 esac
 
-# Allowed tools — read from the agent's AGENT.md if it declares them, otherwise default
+# Checkout ref line — only set for pull_request (uses head_ref from ctx step)
+if [[ "$IS_PR" -eq 1 ]]; then
+  CHECKOUT_REF_LINE="          ref: \${{ steps.ctx.outputs.head_ref }}"
+else
+  CHECKOUT_REF_LINE=""
+fi
+
+# Allowed tools — read from the agent's AGENT.md frontmatter if it declares them
 ALLOWED_TOOLS="Bash,Read,Grep,Glob"
 if grep -q "^allowed_tools:" "${AGENT_SUBMODULE_PATH}/AGENT.md" 2>/dev/null; then
   ALLOWED_TOOLS="$(grep "^allowed_tools:" "${AGENT_SUBMODULE_PATH}/AGENT.md" | sed 's/^allowed_tools:[ ]*//')"
 fi
 
-if [[ -f "$WORKFLOW_FILE" ]]; then
-  echo "= ${WORKFLOW_FILE} already exists, leaving in place"
+if [[ -f "$WORKFLOW_FILE" && "$FORCE" -ne 1 ]]; then
+  echo "= ${WORKFLOW_FILE} already exists, leaving in place (use --force to regenerate)"
 else
   python3 - "$TEMPLATE" "$WORKFLOW_FILE" \
     "$AGENT_NAME" "$AGENT_NAME_TITLE" "$AGENT_SUBMODULE_PATH" \
-    "$ALLOWED_TOOLS" "$TRIGGER_BLOCK" "$PERMISSIONS_BLOCK" <<'PY'
-import sys
-src = open(sys.argv[1]).read()
+    "$ALLOWED_TOOLS" "$TRIGGER_BLOCK" "$PERMISSIONS_BLOCK" \
+    "$CHECKOUT_REF_LINE" "$INBOX_PATH" "$IS_PR" "$IS_INBOX" <<'PY'
+import sys, re
+
+(_, src_path, dst_path, agent, title, repo_dir, tools,
+ trigger_block, permissions, checkout_ref, inbox_path, is_pr, is_inbox) = sys.argv
+is_pr = bool(int(is_pr))
+is_inbox = bool(int(is_inbox))
+
+src = open(src_path).read()
+
+# Conditional blocks: lines bounded by `{{IF_X}}` and `{{ENDIF_X}}`.
+# If flag is true: strip the marker lines, keep the inner block.
+# If flag is false: strip the marker lines AND the inner block.
+def conditional(text, name, keep):
+    # The markers appear on lines by themselves (after stripping leading whitespace).
+    pattern = re.compile(
+        r"^[ \t]*\{\{IF_" + name + r"\}\}[ \t]*\n(.*?)^[ \t]*\{\{ENDIF_" + name + r"\}\}[ \t]*\n",
+        re.MULTILINE | re.DOTALL,
+    )
+    return pattern.sub(lambda m: m.group(1) if keep else "", text)
+
+src = conditional(src, "PR", is_pr)
+src = conditional(src, "INBOX", is_inbox)
+
+# Then substitute scalar placeholders.
 replacements = {
-    "{{AGENT_NAME}}":       sys.argv[3],
-    "{{AGENT_NAME_TITLE}}": sys.argv[4],
-    "{{AGENT_REPO_DIR}}":   sys.argv[5],
-    "{{ALLOWED_TOOLS}}":    sys.argv[6],
-    "{{TRIGGER_BLOCK}}":    sys.argv[7],
-    "{{PERMISSIONS}}":      sys.argv[8],
+    "{{AGENT_NAME}}":       agent,
+    "{{AGENT_NAME_TITLE}}": title,
+    "{{AGENT_REPO_DIR}}":   repo_dir,
+    "{{ALLOWED_TOOLS}}":    tools,
+    "{{TRIGGER_BLOCK}}":    trigger_block,
+    "{{PERMISSIONS}}":      permissions,
+    "{{CHECKOUT_REF_LINE}}": checkout_ref,
+    "{{INBOX_PATH}}":       inbox_path,
 }
 for k, v in replacements.items():
     src = src.replace(k, v)
-open(sys.argv[2], "w").write(src)
+
+# Tidy: drop blank-line runs created by removing optional blocks.
+src = re.sub(r"\n{3,}", "\n\n", src)
+
+# Drop the empty CHECKOUT_REF_LINE line that becomes a blank line after substitution
+src = re.sub(r"\n[ ]*\n([ ]+fetch-depth)", r"\n\1", src)
+
+open(dst_path, "w").write(src)
 PY
   echo "+ rendered ${WORKFLOW_FILE} (adapter: ${ADAPTER}, trigger: ${TRIGGER}, sink: ${SINK})"
 fi

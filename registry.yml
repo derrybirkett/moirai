@@ -11,6 +11,14 @@ agents:
     default_trigger: schedule
     default_sink: issues
 
+  auditor:
+    repo: https://github.com/derrybirkett/auditor
+    version: v0.1.0
+    description: PR-scoped coherence checker that writes findings (IA drift, dead links, copy drift, orphans) to the consuming repo's inbox file.
+    default_adapter: claude-code-action
+    default_trigger: pull_request
+    default_sink: inbox
+
 # Adapters known to Moirai. The installer uses these to drop a workflow file
 # into the consuming repo. Each adapter has a corresponding directory under
 # adapters/<name>/ with a README and a workflow.yml.template.

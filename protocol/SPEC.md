@@ -70,7 +70,19 @@ Every adapter MUST inject the following environment variables into the agent's e
 | `AGENT_REPO_DIR` | Absolute path to the agent's own submodule directory in the consuming repo. | Lets the agent read its own `defaults.yml`, `schema.json`, `scopes/`, etc. |
 | `TODAY` | ISO date (`YYYY-MM-DD`) at run time, UTC. | For dated outputs (issue footers, audit blocks, etc.). |
 
-Adapters MAY inject additional host-specific variables (e.g. `PR_NUMBER`, `PR_BASE_SHA`). Agents that need these MUST document them in their `AGENT.md`.
+### Trigger-specific envelope (REQUIRED for `pull_request` triggers)
+
+When the agent's trigger is `pull_request`, the adapter MUST additionally inject:
+
+| Variable | Value | Purpose |
+|---|---|---|
+| `PR_NUMBER` | The pull request number (e.g. `42`). | Lets the agent address the PR (e.g. in issue titles, audit block headers). |
+| `PR_BASE_SHA` | Base commit SHA (typically the merge target's HEAD). | For computing the diff: `git diff $PR_BASE_SHA $PR_HEAD_SHA`. |
+| `PR_HEAD_SHA` | Head commit SHA (the PR tip). | The other side of the diff. |
+
+These MUST also be resolvable when the same workflow is invoked via `workflow_dispatch` with a `pr_number` input (manual-run mode). The standard adapter implementation resolves them via the GitHub event context for `pull_request` and via `gh pr view` for `workflow_dispatch`.
+
+Adapters MAY inject additional host-specific variables. Agents that need them MUST document them in their `AGENT.md`.
 
 ---
 
@@ -93,6 +105,22 @@ Every agent declares which sink(s) it writes to. The sink is the destination for
 - When writing to `inbox`, the agent MUST use a stable, machine-readable header (e.g. `## Audit — YYYY-MM-DD (PR #N)`) so re-runs can replace the prior block idempotently.
 - When writing to `issues`, the agent MUST use a stable title prefix (typically `[<agent-name>] <category>:`) and dedup against existing open issues before filing.
 - Agents reading other agents' output MUST do so via these stable schemas, not via free-text scraping.
+
+### `inbox` sink commit-back
+
+When the sink is `inbox`, the adapter is responsible for committing the agent's edit to the inbox file back to the source branch (typically the PR head ref). The agent only writes the file — it does NOT call `git commit` or `git push` itself.
+
+The standard `claude-code-action` adapter:
+- Diffs the inbox file after the agent runs; exits cleanly if unchanged.
+- Configures git as `<agent-name>-bot` (e.g. `auditor-bot`).
+- Commits with message `chore(<agent-name>): refresh PR #N findings`.
+- Pushes to the resolved head ref.
+
+Adapters MUST NOT commit anything else: only the configured inbox path.
+
+### Fork safety
+
+For `pull_request` triggers with the `inbox` sink, the adapter MUST skip when the PR head is on a fork. Push permissions for `auditor-bot` and similar do not extend to fork branches; attempting the commit-back would fail loudly. The skip step should `exit 0` with a `::notice::` line, not fail the workflow.
 
 ---
 
