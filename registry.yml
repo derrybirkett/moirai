@@ -13,10 +13,10 @@ agents:
 
   auditor:
     repo: https://github.com/derrybirkett/auditor
-    version: v0.1.0
-    description: PR-scoped coherence checker that writes findings (IA drift, dead links, copy drift, orphans) to the consuming repo's inbox file.
+    version: v0.2.0
+    description: Coherence checker that audits open PRs nightly (default) or single-PR on demand, writing findings to the consuming repo's inbox file.
     default_adapter: claude-code-action
-    default_trigger: pull_request
+    default_trigger: schedule
     default_sink: inbox
 
 # Adapters known to Moirai. The installer uses these to drop a workflow file

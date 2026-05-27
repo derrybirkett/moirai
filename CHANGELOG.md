@@ -4,6 +4,29 @@ All notable changes to Moirai.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and Moirai adheres to [Semantic Versioning](https://semver.org/). Consuming repos pin a tag (e.g. `v0.1.0`) so the orchestrator's behaviour is stable across consumer updates.
 
+## [0.3.0] — 2026-05-27
+
+Third sink+trigger combo: `schedule` + `inbox`. Enables nightshift agents that batch-audit open PRs and commit back to `main` instead of per-PR branches. Auditor `v0.2.0` is the first agent to use this combo.
+
+### Why
+
+The per-PR auditor (introduced in `v0.2.0`) became a blocker in practice: the auditor-bot commit-back to PR branches caused rebase friction, on-every-push timing slowed PR cycles, and per-PR API costs scaled with team activity. Coherence findings are tidiness work — they suit a nightshift cadence.
+
+### Added
+- New conditional block `{{IF_NOT_PR}}…{{ENDIF_NOT_PR}}` in the adapter template — keeps content when the trigger is non-PR (schedule, workflow_dispatch). Stripped otherwise.
+- The inbox commit-back step in `adapters/claude-code-action/workflow.yml.template` now branches:
+  - **PR mode** (existing): commit message `chore(<agent>): refresh PR #N findings`; push to PR head ref.
+  - **Non-PR mode** (new): commit message `chore(<agent>): nightly findings — YYYY-MM-DD`; push to the workflow's own ref (`${{ github.ref_name }}`).
+- `bin/install` now processes three conditional passes: `INBOX` first (outer), then `PR` and `NOT_PR` (inner). Nesting works because outer-then-inner ordering preserves the inner markers when the outer block is kept.
+- `protocol/SPEC.md` §4 documents the trigger-dependent push target. The fork-safety paragraph clarifies that fork safety only applies to PR triggers; schedule triggers commit to the consuming repo's own ref, so fork PRs are safe to audit.
+
+### Changed
+- `registry.yml`: `auditor` default trigger flipped from `pull_request` → `schedule`. Pin bumped to `v0.2.0` (the agent now supports both modes via PROMPT-level mode detection).
+
+### Migration
+- Consumers of auditor `v0.1.0` on Moirai `v0.2.0` keep working — nothing changes for them. To pick up the nightshift default, bump `.moirai` to `v0.3.0` AND `.agents/auditor` to `v0.2.0`, then re-run `.moirai/bin/install auditor --force` to regenerate the workflow with the new trigger.
+- Curator consumers are unaffected — the schedule+issues path is unchanged.
+
 ## [0.2.0] — 2026-05-27
 
 Second-agent release — the protocol now supports the `pull_request` trigger and the `inbox` sink end-to-end, validated by extracting [Auditor](https://github.com/derrybirkett/auditor) as the second agent (after [Curator](https://github.com/derrybirkett/curator)). This was step 4 of the walking-skeleton plan.

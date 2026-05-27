@@ -108,19 +108,27 @@ Every agent declares which sink(s) it writes to. The sink is the destination for
 
 ### `inbox` sink commit-back
 
-When the sink is `inbox`, the adapter is responsible for committing the agent's edit to the inbox file back to the source branch (typically the PR head ref). The agent only writes the file — it does NOT call `git commit` or `git push` itself.
+When the sink is `inbox`, the adapter is responsible for committing the agent's edit to the inbox file back to the source branch. The agent only writes the file — it does NOT call `git commit` or `git push` itself.
 
-The standard `claude-code-action` adapter:
-- Diffs the inbox file after the agent runs; exits cleanly if unchanged.
-- Configures git as `<agent-name>-bot` (e.g. `auditor-bot`).
-- Commits with message `chore(<agent-name>): refresh PR #N findings`.
-- Pushes to the resolved head ref.
+The destination of the commit-back depends on the trigger:
 
-Adapters MUST NOT commit anything else: only the configured inbox path.
+| Trigger | Push target | Commit message shape |
+|---|---|---|
+| `pull_request` | PR head ref (from the resolved PR context) | `chore(<agent>): refresh PR #N findings` |
+| `schedule` / `workflow_dispatch` | The workflow's own ref (`${{ github.ref_name }}`, typically `main`) | `chore(<agent>): nightly findings — YYYY-MM-DD` |
+
+The standard `claude-code-action` adapter handles both. Both:
+- Diff the inbox file after the agent runs; exit cleanly if unchanged.
+- Configure git as `<agent-name>-bot` (e.g. `auditor-bot`).
+- Commit only the configured inbox path.
+
+Adapters MUST NOT commit anything else.
 
 ### Fork safety
 
 For `pull_request` triggers with the `inbox` sink, the adapter MUST skip when the PR head is on a fork. Push permissions for `auditor-bot` and similar do not extend to fork branches; attempting the commit-back would fail loudly. The skip step should `exit 0` with a `::notice::` line, not fail the workflow.
+
+Fork safety does not apply to `schedule` triggers because the commit-back goes to the workflow's own ref (typically `main`), not to any PR's head. Agents in schedule mode MAY audit fork-PRs by reading their diffs via `gh pr view`; the resulting inbox blocks land in the consuming repo's own branch.
 
 ---
 

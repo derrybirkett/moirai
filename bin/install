@@ -231,8 +231,11 @@ def conditional(text, name, keep):
     )
     return pattern.sub(lambda m: m.group(1) if keep else "", text)
 
-src = conditional(src, "PR", is_pr)
+# Order matters: process the outer INBOX block first, then the inner PR / NOT_PR
+# markers (which may live inside an INBOX block as well as at the top level).
 src = conditional(src, "INBOX", is_inbox)
+src = conditional(src, "PR", is_pr)
+src = conditional(src, "NOT_PR", not is_pr)
 
 # Then substitute scalar placeholders.
 replacements = {
