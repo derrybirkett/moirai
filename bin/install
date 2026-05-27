@@ -1,0 +1,203 @@
+#!/usr/bin/env bash
+# moirai/bin/install — install an agent into the current repo.
+#
+# Usage:
+#   .moirai/bin/install <agent-name> [--trigger <trigger>] [--sink <sink>] [--adapter <adapter>]
+#
+# Reads ../registry.yml relative to this script to find the agent.
+# Submodules the agent at its pinned tag, scaffolds .github/agents/<name>/config.yml
+# from the agent's defaults.yml, and drops a workflow from the chosen adapter template.
+#
+# Requires: bash 4+, git, python3 (for YAML reading and template substitution).
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MOIRAI_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+REGISTRY="${MOIRAI_DIR}/registry.yml"
+
+# --- Arg parsing -------------------------------------------------------------
+
+AGENT_NAME=""
+TRIGGER_OVERRIDE=""
+SINK_OVERRIDE=""
+ADAPTER_OVERRIDE=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --trigger) TRIGGER_OVERRIDE="$2"; shift 2 ;;
+    --sink)    SINK_OVERRIDE="$2"; shift 2 ;;
+    --adapter) ADAPTER_OVERRIDE="$2"; shift 2 ;;
+    --help|-h)
+      sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    -*)
+      echo "error: unknown flag $1" >&2
+      exit 2
+      ;;
+    *)
+      if [[ -z "$AGENT_NAME" ]]; then
+        AGENT_NAME="$1"
+      else
+        echo "error: unexpected positional arg $1" >&2
+        exit 2
+      fi
+      shift
+      ;;
+  esac
+done
+
+if [[ -z "$AGENT_NAME" ]]; then
+  echo "usage: install <agent-name> [--trigger <t>] [--sink <s>] [--adapter <a>]" >&2
+  exit 2
+fi
+
+# --- Read a value from registry.yml ------------------------------------------
+# Parses only the shape used by registry.yml: nested keys with scalar values.
+yaml_get() {
+  python3 - "$1" "$2" <<'PY'
+import sys, re
+
+path = sys.argv[2].split(".")
+target = ".".join(path)
+stack = []
+
+with open(sys.argv[1]) as f:
+    for raw in f:
+        line = raw.rstrip("\n")
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        indent = (len(line) - len(line.lstrip(" "))) // 2
+        m = re.match(r"^\s*([A-Za-z0-9_-]+):\s*(.*?)\s*$", line)
+        if not m:
+            continue
+        key, val = m.group(1), m.group(2)
+        stack = stack[:indent] + [key]
+        if ".".join(stack) == target and val != "":
+            print(val)
+            sys.exit(0)
+sys.exit(1)
+PY
+}
+
+# --- Resolve agent from registry --------------------------------------------
+
+AGENT_REPO=$(yaml_get "$REGISTRY" "agents.${AGENT_NAME}.repo") || {
+  echo "error: agent '${AGENT_NAME}' not found in registry.yml" >&2; exit 1; }
+AGENT_VERSION=$(yaml_get "$REGISTRY" "agents.${AGENT_NAME}.version") || {
+  echo "error: no version pinned for '${AGENT_NAME}' in registry.yml" >&2; exit 1; }
+AGENT_DEFAULT_ADAPTER=$(yaml_get "$REGISTRY" "agents.${AGENT_NAME}.default_adapter" || echo "claude-code-action")
+AGENT_DEFAULT_TRIGGER=$(yaml_get "$REGISTRY" "agents.${AGENT_NAME}.default_trigger" || echo "schedule")
+AGENT_DEFAULT_SINK=$(yaml_get "$REGISTRY" "agents.${AGENT_NAME}.default_sink" || echo "issues")
+
+ADAPTER="${ADAPTER_OVERRIDE:-$AGENT_DEFAULT_ADAPTER}"
+TRIGGER="${TRIGGER_OVERRIDE:-$AGENT_DEFAULT_TRIGGER}"
+SINK="${SINK_OVERRIDE:-$AGENT_DEFAULT_SINK}"
+
+TEMPLATE="${MOIRAI_DIR}/adapters/${ADAPTER}/workflow.yml.template"
+if [[ ! -f "$TEMPLATE" ]]; then
+  echo "error: adapter '${ADAPTER}' has no workflow.yml.template at ${TEMPLATE}" >&2
+  exit 1
+fi
+
+# --- Add agent as submodule -------------------------------------------------
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+AGENT_SUBMODULE_PATH=".moirai/agents/${AGENT_NAME}"
+if [[ ! -d "$AGENT_SUBMODULE_PATH" ]]; then
+  git submodule add -b main "$AGENT_REPO" "$AGENT_SUBMODULE_PATH"
+  ( cd "$AGENT_SUBMODULE_PATH" && git checkout "$AGENT_VERSION" )
+  echo "+ added submodule ${AGENT_SUBMODULE_PATH} @ ${AGENT_VERSION}"
+else
+  echo "= submodule ${AGENT_SUBMODULE_PATH} already exists, skipping submodule add"
+fi
+
+# --- Scaffold config.yml from the agent's defaults.yml ----------------------
+
+CONFIG_DIR=".github/agents/${AGENT_NAME}"
+CONFIG_FILE="${CONFIG_DIR}/config.yml"
+mkdir -p "$CONFIG_DIR"
+
+if [[ -f "$CONFIG_FILE" ]]; then
+  echo "= ${CONFIG_FILE} already exists, leaving in place"
+else
+  {
+    echo "# ${AGENT_NAME} agent — repo-specific configuration"
+    echo "# Scaffolded from ${AGENT_NAME}@${AGENT_VERSION} defaults.yml"
+    echo "# Validated against ${AGENT_SUBMODULE_PATH}/schema.json"
+    echo "# Any field omitted here falls back to the agent's defaults."
+    echo ""
+    cat "${AGENT_SUBMODULE_PATH}/defaults.yml"
+  } > "$CONFIG_FILE"
+  echo "+ scaffolded ${CONFIG_FILE}"
+fi
+
+# --- Render the workflow from the adapter template --------------------------
+
+WORKFLOW_FILE=".github/workflows/${AGENT_NAME}.yml"
+mkdir -p .github/workflows
+
+AGENT_NAME_TITLE="$(echo "$AGENT_NAME" | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2)} 1')"
+
+case "$TRIGGER" in
+  schedule)         TRIGGER_BLOCK=$'  schedule:\n    - cron: "0 3 * * *"\n  workflow_dispatch:' ;;
+  pull_request)     TRIGGER_BLOCK=$'  pull_request:\n    types: [opened, synchronize, reopened]\n  workflow_dispatch:' ;;
+  workflow_dispatch) TRIGGER_BLOCK=$'  workflow_dispatch:' ;;
+  *) echo "error: unknown trigger '${TRIGGER}' (supported: schedule, pull_request, workflow_dispatch)" >&2; exit 1 ;;
+esac
+
+case "$SINK" in
+  issues)     PERMISSIONS_BLOCK=$'      contents: read\n      id-token: write\n      issues: write' ;;
+  inbox)      PERMISSIONS_BLOCK=$'      contents: write\n      id-token: write\n      pull-requests: read' ;;
+  summary)    PERMISSIONS_BLOCK=$'      contents: read\n      id-token: write' ;;
+  pr-comment) PERMISSIONS_BLOCK=$'      contents: read\n      id-token: write\n      pull-requests: write' ;;
+  *) echo "error: unknown sink '${SINK}' (supported: issues, inbox, summary, pr-comment)" >&2; exit 1 ;;
+esac
+
+# Allowed tools — read from the agent's AGENT.md if it declares them, otherwise default
+ALLOWED_TOOLS="Bash,Read,Grep,Glob"
+if grep -q "^allowed_tools:" "${AGENT_SUBMODULE_PATH}/AGENT.md" 2>/dev/null; then
+  ALLOWED_TOOLS="$(grep "^allowed_tools:" "${AGENT_SUBMODULE_PATH}/AGENT.md" | sed 's/^allowed_tools:[ ]*//')"
+fi
+
+if [[ -f "$WORKFLOW_FILE" ]]; then
+  echo "= ${WORKFLOW_FILE} already exists, leaving in place"
+else
+  python3 - "$TEMPLATE" "$WORKFLOW_FILE" \
+    "$AGENT_NAME" "$AGENT_NAME_TITLE" "$AGENT_SUBMODULE_PATH" \
+    "$ALLOWED_TOOLS" "$TRIGGER_BLOCK" "$PERMISSIONS_BLOCK" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+replacements = {
+    "{{AGENT_NAME}}":       sys.argv[3],
+    "{{AGENT_NAME_TITLE}}": sys.argv[4],
+    "{{AGENT_REPO_DIR}}":   sys.argv[5],
+    "{{ALLOWED_TOOLS}}":    sys.argv[6],
+    "{{TRIGGER_BLOCK}}":    sys.argv[7],
+    "{{PERMISSIONS}}":      sys.argv[8],
+}
+for k, v in replacements.items():
+    src = src.replace(k, v)
+open(sys.argv[2], "w").write(src)
+PY
+  echo "+ rendered ${WORKFLOW_FILE} (adapter: ${ADAPTER}, trigger: ${TRIGGER}, sink: ${SINK})"
+fi
+
+# --- Done -------------------------------------------------------------------
+
+cat <<EOF
+
+Done. To finish:
+
+  1. Edit ${CONFIG_FILE} to tune the agent for this repo
+  2. Make sure these repo secrets are set:
+       - ANTHROPIC_API_KEY  (gh secret set ANTHROPIC_API_KEY)
+  3. Commit the changes:
+       git add ${CONFIG_FILE} ${WORKFLOW_FILE} .gitmodules ${AGENT_SUBMODULE_PATH}
+       git commit -m "chore: install ${AGENT_NAME}@${AGENT_VERSION} via moirai"
+  4. Push and watch the first run.
+
+EOF

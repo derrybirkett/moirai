@@ -1,0 +1,26 @@
+# Moirai agent registry
+# The catalog of known agents, their source repos, pinned versions, and default adapters.
+# Adding an agent here makes it installable via `bin/install <name>`.
+
+agents:
+  curator:
+    repo: https://github.com/derrybirkett/curator
+    version: v0.1.0
+    description: Read-only scanner that files GitHub issues for cleanup candidates (dead exports, oversized files, stale placeholders).
+    default_adapter: claude-code-action
+    default_trigger: schedule
+    default_sink: issues
+
+# Adapters known to Moirai. The installer uses these to drop a workflow file
+# into the consuming repo. Each adapter has a corresponding directory under
+# adapters/<name>/ with a README and a workflow.yml.template.
+adapters:
+  claude-code-action:
+    description: GitHub Actions adapter using anthropics/claude-code-action.
+    requires:
+      - secret: ANTHROPIC_API_KEY
+      - permission: id-token:write
+    supports_triggers:
+      - schedule
+      - pull_request
+      - workflow_dispatch
