@@ -4,6 +4,27 @@ All notable changes to Moirai.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and Moirai adheres to [Semantic Versioning](https://semver.org/). Consuming repos pin a tag (e.g. `v0.1.0`) so the orchestrator's behaviour is stable across consumer updates.
 
+## [0.3.1] — 2026-05-28
+
+Registry-only patch: bumps Auditor pin to `v0.3.0` and flips its default sink from `inbox` to `issues`. No adapter or installer changes — the `issues` sink path was already supported via Curator's `schedule + issues` combo.
+
+### Changed
+- `registry.yml`: `auditor.version` `v0.2.0` → `v0.3.0`; `auditor.default_sink` `inbox` → `issues`. Description updated.
+
+### Why
+
+Auditor `v0.3.0` switched from writing findings to `notes/inbox.md` to filing GitHub Issues. Driven by a concrete bug: the nightly auditor's commit to `inbox.md` on main caused a merge conflict that blocked an unrelated PR merge. More fundamentally, agent-generated findings belong in the triage queue (where Curator already files) rather than injected into the developer's session inbox.
+
+### Migration for existing consumers
+
+After bumping `.moirai` to `v0.3.1` and `.agents/auditor` to `v0.3.0`:
+
+```bash
+.moirai/bin/install auditor --sink issues --force
+```
+
+This regenerates the workflow with `issues: write` permission (instead of `contents: write`) and drops the inbox commit-back step.
+
 ## [0.3.0] — 2026-05-27
 
 Third sink+trigger combo: `schedule` + `inbox`. Enables nightshift agents that batch-audit open PRs and commit back to `main` instead of per-PR branches. Auditor `v0.2.0` is the first agent to use this combo.

@@ -13,11 +13,11 @@ agents:
 
   auditor:
     repo: https://github.com/derrybirkett/auditor
-    version: v0.2.0
-    description: Coherence checker that audits open PRs nightly (default) or single-PR on demand, writing findings to the consuming repo's inbox file.
+    version: v0.3.0
+    description: Coherence checker that audits open PRs nightly (default) or single-PR on demand, filing GitHub issues into the same triage queue as Curator.
     default_adapter: claude-code-action
     default_trigger: schedule
-    default_sink: inbox
+    default_sink: issues
 
 # Adapters known to Moirai. The installer uses these to drop a workflow file
 # into the consuming repo. Each adapter has a corresponding directory under
