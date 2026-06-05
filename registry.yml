@@ -3,6 +3,8 @@
 # Adding an agent here makes it installable via `bin/install <name>`.
 
 agents:
+  # RETIRED 2026-06-05 — superseded by lachesis (quality dimension).
+  # Kept for provenance; not installed in any consuming repo.
   curator:
     repo: https://github.com/derrybirkett/curator
     version: v0.1.0
@@ -10,7 +12,11 @@ agents:
     default_adapter: claude-code-action
     default_trigger: schedule
     default_sink: issues
+    retired: true
+    superseded_by: lachesis
 
+  # RETIRED 2026-06-05 — superseded by lachesis (coherence dimension).
+  # Kept for provenance; not installed in any consuming repo.
   auditor:
     repo: https://github.com/derrybirkett/auditor
     version: v0.3.0
@@ -18,6 +24,8 @@ agents:
     default_adapter: claude-code-action
     default_trigger: schedule
     default_sink: issues
+    retired: true
+    superseded_by: lachesis
 
   atropos:
     repo: https://github.com/derrybirkett/atropos
@@ -39,8 +47,8 @@ agents:
 
   lachesis:
     repo: https://github.com/derrybirkett/lachesis
-    version: v0.1.0
-    description: "Fate agent — measures the thread. Scores existing content across three dimensions (quality, coverage, coherence), files issues and a scorecard. Config-driven; fires on adequacy only (absent content belongs to Clotho). Subsumes Curator and Auditor as its dimensions reach parity."
+    version: v0.2.0
+    description: "Fate agent — measures the thread. Scores existing content across three dimensions (quality, coverage, coherence), files issues and a scorecard. Config-driven; fires on adequacy only (absent content belongs to Clotho). Supersedes Curator (quality) and Auditor (coherence) as of v0.2.0."
     default_adapter: claude-code-action
     default_trigger: schedule
     default_sink: issues
