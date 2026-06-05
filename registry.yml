@@ -37,6 +37,15 @@ agents:
     default_sink: issues
     trust_level: observe
 
+  lachesis:
+    repo: https://github.com/derrybirkett/lachesis
+    version: v0.1.0
+    description: "Fate agent — measures the thread. Scores existing content across three dimensions (quality, coverage, coherence), files issues and a scorecard. Config-driven; fires on adequacy only (absent content belongs to Clotho). Subsumes Curator and Auditor as its dimensions reach parity."
+    default_adapter: claude-code-action
+    default_trigger: schedule
+    default_sink: issues
+    trust_level: observe
+
 # Adapters known to Moirai. The installer uses these to drop a workflow file
 # into the consuming repo. Each adapter has a corresponding directory under
 # adapters/<name>/ with a README and a workflow.yml.template.
