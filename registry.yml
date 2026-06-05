@@ -19,6 +19,15 @@ agents:
     default_trigger: schedule
     default_sink: issues
 
+  atropos:
+    repo: https://github.com/derrybirkett/atropos
+    version: v0.1.0
+    description: Fate agent — closes what is done. Warns stale issues and closes them after the grace period; warns abandoned PRs; optionally archives resolved inbox items. First act-trust agent in the registry.
+    default_adapter: claude-code-action
+    default_trigger: schedule
+    default_sink: issues
+    trust_level: act
+
 # Adapters known to Moirai. The installer uses these to drop a workflow file
 # into the consuming repo. Each adapter has a corresponding directory under
 # adapters/<name>/ with a README and a workflow.yml.template.
