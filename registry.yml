@@ -28,6 +28,15 @@ agents:
     default_sink: issues
     trust_level: act
 
+  clotho:
+    repo: https://github.com/derrybirkett/clotho
+    version: v0.1.0
+    description: "Fate agent — spins the thread. Detects gaps: content referenced or declared but not yet written, and files an issue proposing the thread to spin. Config-driven; fires on absence only (existing-but-thin artifacts belong to Lachesis)."
+    default_adapter: claude-code-action
+    default_trigger: schedule
+    default_sink: issues
+    trust_level: observe
+
 # Adapters known to Moirai. The installer uses these to drop a workflow file
 # into the consuming repo. Each adapter has a corresponding directory under
 # adapters/<name>/ with a README and a workflow.yml.template.
