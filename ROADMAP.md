@@ -17,6 +17,60 @@ The walking-skeleton is complete and validated end-to-end:
 
 The protocol's atomic unit is the **agent**. One agent ↔ one workflow file ↔ one trigger ↔ one sink. Adopting an agent in a new repo is one `bin/install <name>` command.
 
+## Next agent — **Refiner**
+
+Before the next protocol layer, the next *agent extraction*. Refiner curates the issue queue that Curator and Auditor file into: it reads existing `[curator] …` and `[auditor] …` issues and acts on the queue itself rather than the codebase.
+
+**Job:** keep the triage queue honest. Close issues whose underlying code no longer exists (work got done incidentally), merge duplicates, re-label stale ones, demote findings that the same agent has re-filed N times without action.
+
+**Shape:**
+- Trigger: `schedule` (nightly, after Curator + Auditor)
+- Sink: `issues` (closes and comments — same sink, write-back rather than write-new)
+- Scope: read-only against the codebase; write-only against the issue queue
+
+**Why this is the right next agent (not a code-writing fixer, not Conductor):**
+
+1. **Validates "agent reads another agent's output and acts" on the safest possible surface.** The queue is structured (stable title prefixes, labels) and the worst-case failure mode is a wrongly-closed issue, not bad code. Compare a per-category fixer (e.g. a "dead exports remover") where the failure mode is a bad PR that wastes review time.
+2. **Generates the data the Conductor decision needs.** Conductor (the v0.4–v1.0 direction in Layer 2/Layer 4 below) is "a story that reads sinks and decides cross-cutting action." That design is currently speculative because we don't know what the queue *looks like* after the noise is filtered out. Refiner produces that signal — once it's running, the question "does this queue have bundle-able structure?" becomes answerable from data, not architecture taste.
+3. **Tests whether the `issues` sink needs richer semantics** (close, comment, relabel) before we commit to it as the de-facto agent-output sink. Cheaper to discover gaps now than during a Conductor build.
+
+**Rollout — both consuming repos in parallel:**
+- Extract Refiner to its own repo following the protocol (`AGENT.md`, `PROMPT.md`, `schema.json`, `defaults.yml`).
+- Pin `v0.1.0` in `registry.yml`.
+- Install into both `monospace.studio` and `deltado` on the same day. Two consuming repos with different queue compositions is the real test of whether the agent generalises; one repo isn't enough signal.
+- Run for ~2 weeks before drawing conclusions about queue shape and the Conductor question.
+
+**What we'll know after Refiner:**
+- Whether the protocol needs a new `pr` sink (for a future code-writing fixer) or whether reusing `issues` for write-back is enough.
+- Whether per-category fixers are worth building, or whether Refiner-curated queues are tractable enough for direct human action.
+- Whether Conductor is solving a real problem or a speculative one.
+
+**Risk:** Refiner over-closes — silently archives a finding that mattered. Mitigation: every close gets a comment with the reasoning before closing, and a `refiner-closed` label so accidental closes are searchable and reversible.
+
+## Open question — drop the `inbox` sink entirely?
+
+Working hypothesis (not yet decided): the `inbox` sink is a v0.2-era artifact that should be collapsed away.
+
+**Evidence against keeping it:**
+- v0.3.0 already deprecated the `schedule + inbox` combo for Auditor in response to a concrete bug (nightly inbox commits caused a merge conflict that blocked an unrelated PR — see [CHANGELOG.md](CHANGELOG.md)). The same failure mode applies to any future schedule+inbox agent.
+- Refiner (above) curates *issues*. Inbox blocks have stable headers but no real lifecycle (no close, no label, no assignee, no dedup beyond header replacement). Two output substrates means two curation strategies — and only one has a curator.
+- The fork-safety carve-out in [SPEC §4](protocol/SPEC.md) exists solely because inbox commit-back can't push to fork PR head refs. Drop the sink, drop the carve-out, simpler spec.
+
+**The one real use case (`pull_request + inbox`)** — per-PR feedback that survives review noise — is better served by the reserved `pr-comment` sink: lives on the PR where conversation already happens, no commit-back machinery, sticky-comment dedup is a solved pattern, no fork-safety problem.
+
+**Proposed collapse:**
+
+| Use case | Trigger | Sink |
+|---|---|---|
+| Nightly finders | `schedule` | `issues` |
+| Per-PR durable finds | `pull_request` | `issues` |
+| Per-PR feedback (typical) | `pull_request` | `pr-comment` |
+| Dry-run / smoke | any | `summary` |
+
+3 sinks instead of 4. Migration cost is Auditor-side (its `pull_request + inbox` mode swaps to `pr-comment`), not a Moirai protocol break.
+
+**When to decide:** during the Refiner rollout. If Refiner's first two weeks confirm issues are the right substrate for agent output, formalise the inbox drop in Moirai v0.5 alongside the `pr-comment` sink becoming first-class.
+
 ## Where it's heading — three layers above the current atomic unit
 
 The current architecture optimises for *shipping individual agents*. The next architectural concerns are *composing them into coordinated work* and *scaling them across hosts*. Three new primitives, introduced in order of cost-benefit:
@@ -147,6 +201,43 @@ The case for leapfrog: today's per-agent shape was already deprecated by stories
 
 **Current preference: incremental.** Revisit if a strong external pressure (multi-repo coordination need, non-GitHub-Actions host) makes leapfrog the right move.
 
+## Atropos — branch cleanup capability
+
+Atropos currently manages stale issues and PRs. Branch cleanup is a natural extension of its "cut what has gone cold" mandate — but should be reactive, not autonomous, to avoid deleting in-flight work.
+
+**Proposed flow:**
+
+1. **Lachesis marks the branch.** After Lachesis observes a merged PR (or a branch whose PR has closed/squash-merged), it adds an `atropos:delete-branch` label to the closed PR.
+2. **Atropos deletes on next run.** Atropos queries closed PRs carrying `atropos:delete-branch`, checks the associated remote branch still exists, and deletes it via `gh api repos/{owner}/{repo}/git/refs/heads/{branch}`.
+3. **Safety checks before delete:**
+   - Branch must point to a commit already in `main` (i.e. reachable — confirms merge actually landed).
+   - Branch must not match a `protect_patterns` list in config (e.g. `beta`, `release/*`).
+   - Optionally: skip if branch was pushed within the last N hours (grace window for force-push recovery).
+
+**Config additions (`config.yml`):**
+
+```yaml
+categories:
+  stale_branches: true          # new — off by default
+
+branch_cleanup:
+  protect_patterns:
+    - beta
+    - release/*
+  grace_hours: 2                # skip branches pushed within last N hours
+  max_deletes_per_run: 20
+```
+
+**Why Lachesis marks, not Atropos deciding alone:**
+
+Atropos deciding autonomously which branches are "done" requires it to understand PR state, merge strategy (squash vs. merge vs. rebase), and whether the commit landed on main. Lachesis already reads all of that. Separation keeps Atropos as executor and Lachesis as observer — consistent with their current trust model (`observe` for both; `execute` for Atropos only).
+
+**When:** after Refiner ships and the issue-sink pattern is validated. Branch cleanup is a lower-risk extension (worst case: a branch is deleted that needed restoring — `git push origin <sha>:refs/heads/<name>` recovers it) than any code-writing capability.
+
+**Protocol implications:** this is the first reactive chain in production — Lachesis labels → Atropos acts. Validates the pattern ahead of Stories (Layer 2) without needing the full dispatcher machinery.
+
+---
+
 ## Open questions
 
 1. **Where do `pickup` / `handover` skills live?** Currently `~/.claude/`, personal-level. Once Layer 3 (skills) ships, do they migrate into Moirai? Or stay as a separate "user-facing skills" layer outside the agent-orchestrator concern?
@@ -157,4 +248,4 @@ The case for leapfrog: today's per-agent shape was already deprecated by stories
 
 ---
 
-*Last updated: 2026-05-27. Architecture conversation captured during the v0.3.0 wrap-up session.*
+*Last updated: 2026-06-23. Added Atropos branch-cleanup capability (Lachesis marks → Atropos deletes); added Refiner as next agent extraction.*
